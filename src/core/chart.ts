@@ -1,5 +1,6 @@
 import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
 import type { LeaderboardRow } from './db';
+import { createCanvas } from 'canvas';
 
 const width = 1100;
 const height = 550;
@@ -81,6 +82,48 @@ export async function renderAvgGuessChart(rows: LeaderboardRow[], names: string[
     },
   };
   return await chart.renderToBuffer(configuration, 'image/png');
+}
+
+export async function renderTableImage(headers: string[], rows: string[][]): Promise<Buffer> {
+  const maxRows = 15;
+  const rowHeight = 32;
+  const padding = 20;
+  const colWidth = 80;
+  const w = headers.length * colWidth + padding * 2;
+  const h = (Math.min(rows.length, maxRows) + 2) * rowHeight + padding * 2;
+  
+  const canvas = createCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  
+  // Background
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(0, 0, w, h);
+  
+  // Title
+  ctx.fillStyle = '#e5e7eb';
+  ctx.font = 'bold 24px monospace';
+  ctx.fillText('Wordle Leaderboard', padding, padding + 20);
+  
+  // Headers
+  ctx.font = 'bold 16px monospace';
+  ctx.fillStyle = '#93c5fd';
+  for (let j = 0; j < headers.length; j++) {
+    ctx.fillText(headers[j] || '', padding + j * colWidth, padding + rowHeight * 2);
+  }
+  
+  // Data rows
+  ctx.font = '14px monospace';
+  ctx.fillStyle = '#e5e7eb';
+  for (let i = 0; i < Math.min(rows.length, maxRows); i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const y = padding + rowHeight * (i + 3);
+    for (let j = 0; j < row.length; j++) {
+      ctx.fillText(row[j] || '', padding + j * colWidth, y);
+    }
+  }
+  
+  return canvas.toBuffer('image/png');
 }
 
 

@@ -4,7 +4,7 @@ import { parseWordleSummary } from './core/parser';
 import { loadEnv } from './core/env';
 import cron from 'node-cron';
 import dayjs from 'dayjs';
-import { renderAvgGuessChart } from './core/chart';
+import { renderTableImage } from './core/chart';
 
 const env = loadEnv();
 
@@ -56,22 +56,36 @@ client.on(Events.InteractionCreate, async (interaction) => {
 			await interaction.reply('No results yet.');
 			return;
 		}
-		const header = ['Rank','User','Weighted Avg','Avg','SD','Games','Total','1','2','3','4','5','6','Fail'].join(' | ');
-		const lines = rows.slice(0, 15).map((r, i) => [
+		// Resolve display names
+		const guild = await client.guilds.fetch(env.GUILD_ID);
+		const nameMap: Record<string, string> = {};
+		for (const r of rows) {
+			try {
+				const m = await guild.members.fetch(r.discordUserId);
+				nameMap[r.discordUserId] = m.displayName;
+			} catch {
+				try {
+					const u = await client.users.fetch(r.discordUserId);
+					nameMap[r.discordUserId] = u.username;
+				} catch {
+					nameMap[r.discordUserId] = r.discordUserId;
+				}
+			}
+		}
+		// Just the table as image
+		const headers = ['Rank','Name','Weighted Avg','Avg','SD','Games','Total','1','2','3','4','5','6','Fail'];
+		const tableRows: string[][] = rows.slice(0, 15).map((r, i) => [
 			String(i+1),
-			`<@${r.discordUserId}>`,
+			nameMap[r.discordUserId] || r.discordUserId,
 			r.weightedAvg.toFixed(2),
 			r.avgGuesses == null ? '-' : r.avgGuesses.toFixed(2),
 			r.stdDev == null ? '-' : r.stdDev.toFixed(2),
 			String(r.gamesPlayed),
 			String(r.total),
 			String(r.g1),String(r.g2),String(r.g3),String(r.g4),String(r.g5),String(r.g6),String(r.failures)
-		].join(' | '));
-		const mentions = rows.slice(0, 10).map(r => `<@${r.discordUserId}>`);
-		const png = await renderAvgGuessChart(rows, mentions);
-		const file = new AttachmentBuilder(png, { name: 'leaderboard.png' });
-		const table = '```\n' + header + '\n' + lines.join('\n') + '\n```';
-		await interaction.reply({ content: table, files: [file] });
+		]);
+		const png = await renderTableImage(headers, tableRows);
+		await interaction.reply({ files: [new AttachmentBuilder(png, { name: 'leaderboard.png' })] });
 	}
 	if (interaction.commandName === 'backfill') {
 		const limit = interaction.options.getInteger('limit') ?? 500;
@@ -96,14 +110,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
 				// Don't require a specific author; rely on parser match instead
 				const parsed = parseWordleSummary(msg.content || '');
 				if (!parsed) continue;
+				console.log(`📝 Found message with ${parsed.entries.length} entries: ${msg.content?.slice(0, 50)}...`);
 				const dateISO = new Date(msg.createdTimestamp || Date.now()).toISOString().slice(0,10);
 				for (const e of parsed.entries) {
 					let uid = e.userId;
 					if (uid.startsWith('@')) {
 						const { getAlias } = await import('./core/db');
 						const mapped = getAlias(openDb(), uid);
-						if (!mapped) continue;
+						if (!mapped) {
+							console.log(`❌ No alias for: ${uid}`);
+							continue;
+						}
 						uid = mapped;
+						console.log(`✅ Mapped ${e.userId} -> ${uid}`);
 					}
 					upsertResult(db, {
 						discordUserId: uid,
@@ -119,7 +138,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 			fetched += batch.size;
 			lastId = batch.last()?.id;
 		}
-		await interaction.editReply(`Backfill complete. Scanned ${fetched} messages, ingested ${ingested} rows.`);
+		await interaction.editReply(`Backfill complete. Scanned ${fetched} messages, found ${ingested} valid entries. Check console for details.`);
 	}
 	if (interaction.commandName === 'alias') {
 		const sub = interaction.options.getSubcommand();

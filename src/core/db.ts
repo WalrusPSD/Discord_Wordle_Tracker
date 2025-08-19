@@ -104,7 +104,7 @@ export type LeaderboardRow = {
   wins: number;
   failures: number;
   g1: number; g2: number; g3: number; g4: number; g5: number; g6: number;
-  avgGuesses: number | null; // mean of guesses for wins only
+  avgGuesses: number | null; // mean of guesses with failures counted as 7
   stdDev: number | null;
   total: number; // sum of (7 - guesses) for wins
   weightedAvg: number; // total / gamesPlayed
@@ -128,7 +128,7 @@ export function getLeaderboard(db: Database.Database): LeaderboardRow[] {
              SUM(CASE WHEN r.guesses = 4 THEN 1 ELSE 0 END) AS g4,
              SUM(CASE WHEN r.guesses = 5 THEN 1 ELSE 0 END) AS g5,
              SUM(CASE WHEN r.guesses = 6 THEN 1 ELSE 0 END) AS g6,
-             (SELECT AVG(w.guesses) FROM wins_only w WHERE w.discord_user_id = r.discord_user_id) AS avgGuesses
+             0 AS avgGuesses -- placeholder; compute in JS so failures count as 7
       FROM results r
       GROUP BY r.discord_user_id
     )
@@ -142,13 +142,16 @@ export function getLeaderboard(db: Database.Database): LeaderboardRow[] {
     const total = (r.g1*6) + (r.g2*5) + (r.g3*4) + (r.g4*3) + (r.g5*2) + (r.g6*1);
     const weightedAvg = r.gamesPlayed ? total / r.gamesPlayed : 0;
     // stddev over wins only using a second query per user for clarity
-    return { ...r, total, weightedAvg, stdDev: null } as LeaderboardRow;
+    return { ...r, total, weightedAvg, stdDev: null, avgGuesses: null } as LeaderboardRow;
   });
 
-  // Compute stddev of guesses on wins only per user
-  const stmt = db.prepare(`SELECT guesses FROM results WHERE failed = 0 AND discord_user_id = ?`);
+  // Compute avg and stddev counting failures as 7
+  const stmt = db.prepare(`SELECT guesses, failed FROM results WHERE discord_user_id = ?`);
   for (const row of withDerived) {
-    const vals = (stmt.all(row.discordUserId) as { guesses: number }[]).map(v => v.guesses);
+    const vals = (stmt.all(row.discordUserId) as { guesses: number | null, failed: number }[])
+      .map(v => v.failed ? 7 : (v.guesses ?? 7));
+    if (vals.length === 0) { row.avgGuesses = null; row.stdDev = null; continue; }
+    row.avgGuesses = vals.reduce((a,b)=>a+b,0) / vals.length;
     if (vals.length <= 1) { row.stdDev = 0; continue; }
     const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
     const variance = vals.reduce((a,b)=>a+Math.pow(b-mean,2),0)/(vals.length-1);

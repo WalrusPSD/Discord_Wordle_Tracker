@@ -13,10 +13,12 @@ const required = [
 
 type RequiredKey = typeof required[number];
 
-type Env = Record<RequiredKey, string>;
+type Env = Record<RequiredKey, string> & {
+  ENABLE_INGEST: boolean;
+};
 
 export function loadEnv(): Env {
-  const env: Env = {
+  const base = {
     DISCORD_TOKEN: process.env.DISCORD_TOKEN!,
     GUILD_ID: process.env.GUILD_ID!,
     CHANNEL_ID: process.env.CHANNEL_ID!,
@@ -26,11 +28,16 @@ export function loadEnv(): Env {
   };
 
   for (const key of required) {
-    const value = env[key];
+    const value = base[key];
     if (!value) {
       throw new Error(`Missing env: ${key}`);
     }
   }
+
+  const env: Env = {
+    ...base,
+    ENABLE_INGEST: (process.env.ENABLE_INGEST || 'false').toLowerCase() === 'true',
+  };
 
   process.env.TZ = env.TZ;
   return env;

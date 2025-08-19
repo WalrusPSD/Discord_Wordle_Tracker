@@ -1,15 +1,17 @@
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, TextChannel, Events } from 'discord.js';
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, Events } from 'discord.js';
+import { openDb, upsertResult } from './core/db';
+import { parseWordleSummary } from './core/parser';
 import { loadEnv } from './core/env';
 import cron from 'node-cron';
 import dayjs from 'dayjs';
 
 const env = loadEnv();
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-  ],
-});
+const intents = [GatewayIntentBits.Guilds];
+if (env.ENABLE_INGEST) {
+  intents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
+}
+const client = new Client({ intents });
 
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Ping -> Pong'),
@@ -44,6 +46,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-// Message listener will be enabled once Message Content intent is turned on in the Developer Portal.
+// Optional ingest (requires Message Content intent enabled in Developer Portal)
+if (env.ENABLE_INGEST) {
+  const db = openDb();
+  client.on(Events.MessageCreate, async (message) => {
+    if (!message.guild || message.channelId !== env.CHANNEL_ID) return;
+    if (message.author.id !== env.WORDLE_BOT_ID) return;
+    const parsed = parseWordleSummary(message.content || '');
+    if (!parsed) return;
+    const dateISO = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
+    for (const e of parsed.entries) {
+      upsertResult(db, {
+        discordUserId: e.userId,
+        puzzleNumber: parsed.puzzleNumber,
+        dateISO,
+        guesses: e.failed ? null : e.guesses,
+        failed: e.failed ? 1 : 0,
+        raw: message.content || '',
+      });
+    }
+    console.log(`ingested ${parsed.entries.length} result(s)`);
+  });
+}
 
 client.login(env.DISCORD_TOKEN);

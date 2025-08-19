@@ -44,6 +44,21 @@ export function openDb(dbFile = path.join(process.cwd(), 'data.sqlite')): any {
       FOREIGN KEY (game_id) REFERENCES games(id)
     );
   `);
+
+	// Seed aliases from aliases.json if present
+	try {
+		const aliasPath = path.join(process.cwd(), 'aliases.json');
+		if (fs.existsSync(aliasPath)) {
+			const data = JSON.parse(fs.readFileSync(aliasPath, 'utf8')) as Record<string, string>;
+			const stmt = db.prepare(`INSERT INTO aliases(alias, discord_user_id) VALUES(?, ?) ON CONFLICT(alias) DO UPDATE SET discord_user_id=excluded.discord_user_id`);
+			for (const [alias, id] of Object.entries(data)) {
+				stmt.run(alias.replace(/^@/, '').toLowerCase(), id);
+			}
+		}
+	} catch (e) {
+		// ignore seed errors
+	}
+
   return db;
 }
 
@@ -89,7 +104,7 @@ export type LeaderboardRow = {
   wins: number;
   failures: number;
   g1: number; g2: number; g3: number; g4: number; g5: number; g6: number;
-  avgGuesses: number | null;
+  avgGuesses: number | null; // mean of guesses for wins only
   stdDev: number | null;
   total: number; // sum of (7 - guesses) for wins
   weightedAvg: number; // total / gamesPlayed
@@ -97,7 +112,12 @@ export type LeaderboardRow = {
 
 export function getLeaderboard(db: Database.Database): LeaderboardRow[] {
   const rows = db.prepare(`
-    WITH agg AS (
+    WITH wins_only AS (
+      SELECT discord_user_id, guesses
+      FROM results
+      WHERE failed = 0
+    ),
+    agg AS (
       SELECT r.discord_user_id AS uid,
              COUNT(*) AS gamesPlayed,
              SUM(CASE WHEN r.failed = 1 THEN 1 ELSE 0 END) AS failures,
@@ -108,7 +128,7 @@ export function getLeaderboard(db: Database.Database): LeaderboardRow[] {
              SUM(CASE WHEN r.guesses = 4 THEN 1 ELSE 0 END) AS g4,
              SUM(CASE WHEN r.guesses = 5 THEN 1 ELSE 0 END) AS g5,
              SUM(CASE WHEN r.guesses = 6 THEN 1 ELSE 0 END) AS g6,
-             AVG(CASE WHEN r.failed = 0 THEN r.guesses END) AS avgGuesses
+             (SELECT AVG(w.guesses) FROM wins_only w WHERE w.discord_user_id = r.discord_user_id) AS avgGuesses
       FROM results r
       GROUP BY r.discord_user_id
     )

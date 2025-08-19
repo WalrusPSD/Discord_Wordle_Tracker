@@ -4,7 +4,7 @@ import { parseWordleSummary } from './core/parser';
 import { loadEnv } from './core/env';
 import cron from 'node-cron';
 import dayjs from 'dayjs';
-import { renderLeaderboardChart } from './core/chart';
+import { renderAvgGuessChart } from './core/chart';
 
 const env = loadEnv();
 
@@ -67,8 +67,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 			String(r.total),
 			String(r.g1),String(r.g2),String(r.g3),String(r.g4),String(r.g5),String(r.g6),String(r.failures)
 		].join(' | '));
-		const labels = rows.slice(0, 10).map(r => r.discordUserId);
-		const png = await renderLeaderboardChart(rows, labels);
+		const mentions = rows.slice(0, 10).map(r => `<@${r.discordUserId}>`);
+		const png = await renderAvgGuessChart(rows, mentions);
 		const file = new AttachmentBuilder(png, { name: 'leaderboard.png' });
 		const table = '```\n' + header + '\n' + lines.join('\n') + '\n```';
 		await interaction.reply({ content: table, files: [file] });
@@ -87,19 +87,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
 		}
 		const db = openDb();
 		let fetched = 0;
+		let ingested = 0;
 		let lastId: string | undefined;
 		while (fetched < limit) {
 			const batch = await (channel as any).messages.fetch({ limit: Math.min(100, limit - fetched), before: lastId });
 			if (batch.size === 0) break;
 			for (const [, msg] of batch) {
-				if (msg.author?.id !== env.WORDLE_BOT_ID) continue;
+				// Don't require a specific author; rely on parser match instead
 				const parsed = parseWordleSummary(msg.content || '');
 				if (!parsed) continue;
 				const dateISO = new Date(msg.createdTimestamp || Date.now()).toISOString().slice(0,10);
 				for (const e of parsed.entries) {
 					let uid = e.userId;
 					if (uid.startsWith('@')) {
-						// lazy import to avoid top-level circulars in this edit
 						const { getAlias } = await import('./core/db');
 						const mapped = getAlias(openDb(), uid);
 						if (!mapped) continue;
@@ -113,12 +113,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 						failed: e.failed ? 1 : 0,
 						raw: msg.content || '',
 					});
+					ingested++;
 				}
 			}
 			fetched += batch.size;
 			lastId = batch.last()?.id;
 		}
-		await interaction.editReply(`Backfill complete. Scanned ${fetched} messages.`);
+		await interaction.editReply(`Backfill complete. Scanned ${fetched} messages, ingested ${ingested} rows.`);
 	}
 	if (interaction.commandName === 'alias') {
 		const sub = interaction.options.getSubcommand();
@@ -147,6 +148,7 @@ if (env.ENABLE_INGEST) {
 	const db = openDb();
 	client.on(Events.MessageCreate, async (message) => {
 		if (!message.guild || message.channelId !== env.CHANNEL_ID) return;
+		// Keep author filter for live ingest to reduce false positives
 		if (message.author.id !== env.WORDLE_BOT_ID) return;
 		const parsed = parseWordleSummary(message.content || '');
 		if (!parsed) return;

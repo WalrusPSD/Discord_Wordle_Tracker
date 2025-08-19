@@ -42,4 +42,45 @@ export async function renderLeaderboardChart(rows: LeaderboardRow[], labels: str
   return await chart.renderToBuffer(configuration, 'image/png');
 }
 
+export async function renderAvgGuessChart(rows: LeaderboardRow[], names: string[]): Promise<Buffer> {
+  const top = Math.min(rows.length, names.length, 10);
+  const subset = rows
+    .map((r, idx) => ({ ...r, name: names[idx] }))
+    .sort((a, b) => {
+      const aAvg = a.avgGuesses ?? Infinity;
+      const bAvg = b.avgGuesses ?? Infinity;
+      if (aAvg !== bAvg) return aAvg - bAvg; // lower is better
+      return b.gamesPlayed - a.gamesPlayed;
+    })
+    .slice(0, top);
+
+  const chart = new ChartJSNodeCanvas({ width, height, backgroundColour: '#111827' });
+  const configuration = {
+    type: 'bar' as const,
+    data: {
+      labels: subset.map(s => s.name),
+      datasets: [{
+        label: 'Average guesses (lower is better)',
+        data: subset.map(s => Number((s.avgGuesses ?? 0).toFixed(2))),
+        backgroundColor: '#60a5fa',
+        borderWidth: 0,
+        borderRadius: 4,
+      }],
+    },
+    options: {
+      indexAxis: 'y' as const,
+      responsive: false,
+      plugins: {
+        legend: { labels: { color: '#e5e7eb' } },
+        title: { display: true, text: 'Wordle Average Guesses (Top 10)', color: '#e5e7eb' },
+      },
+      scales: {
+        x: { ticks: { color: '#cbd5e1' }, grid: { display: false }, min: 1, max: 6 },
+        y: { ticks: { color: '#cbd5e1' } },
+      },
+    },
+  };
+  return await chart.renderToBuffer(configuration, 'image/png');
+}
+
 

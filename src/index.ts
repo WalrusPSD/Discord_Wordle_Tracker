@@ -8,8 +8,6 @@ const env = loadEnv();
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -46,11 +44,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot && message.author.id !== env.WORDLE_BOT_ID) return;
-  if (message.channelId !== env.CHANNEL_ID) return;
-  // Placeholder: log the incoming message for now
-  console.log(`[msg] from ${message.author.tag}: ${message.content?.slice(0, 120)}`);
-});
+// Message listener will be enabled once Message Content intent is turned on in the Developer Portal.
 
 client.login(env.DISCORD_TOKEN);

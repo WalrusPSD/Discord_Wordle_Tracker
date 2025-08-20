@@ -86,76 +86,76 @@ export async function renderAvgGuessChart(rows: LeaderboardRow[], names: string[
 
 export async function renderTableImage(headers: string[], rows: string[][]): Promise<Buffer> {
   const maxRows = 15;
-  const rowHeight = 36;
-  const paddingX = 24;
-  const paddingY = 22;
-  const gutter = 12;
-  const minColWidth = 70;
-  const headerHeight = 44;
-  const titleHeight = 32;
+  const rowHeight = 54;
+  const paddingX = 48;
+  const paddingY = 44;
+  const gutter = 20;
+  const minColWidth = 96;
+  const headerHeight = 64;
+  const titleHeight = 0; // no title
+  const dpiScale = 3; // high DPI for sharp, large text
 
   // Compute dynamic widths per column based on content
   const canvasTmp = createCanvas(10, 10);
   const ctxTmp = canvasTmp.getContext('2d');
-  ctxTmp.font = '14px "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif';
+  ctxTmp.font = '22px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
   const colWidths = headers.map((h, idx) => {
-    const headerWidth = ctxTmp.measureText(h).width + 14;
-    const cellWidths = rows.slice(0, maxRows).map(r => (r[idx] ? ctxTmp.measureText(r[idx]).width + 14 : 0));
+    const headerWidth = ctxTmp.measureText(h).width + 22;
+    const cellWidths = rows.slice(0, maxRows).map(r => (r[idx] ? ctxTmp.measureText(r[idx]).width + 22 : 0));
     const maxCell = cellWidths.length ? Math.max(...cellWidths) : 0;
-    return Math.max(minColWidth, headerWidth, maxCell);
+    const base = Math.max(idx === 1 ? 280 : minColWidth, headerWidth, maxCell);
+    return base;
   });
   const totalWidth = colWidths.reduce((a, b) => a + b, 0) + paddingX * 2 + gutter * (headers.length - 1);
-  const totalHeight = paddingY * 2 + titleHeight + headerHeight + (Math.min(rows.length, maxRows)) * rowHeight;
+  const rowCount = Math.min(rows.length, maxRows);
+  const bottomPadding = 24;
+  const totalHeight = paddingY + titleHeight + headerHeight + rowCount * rowHeight + bottomPadding;
   
-  const canvas = createCanvas(totalWidth, totalHeight);
+  const canvas = createCanvas(totalWidth * dpiScale, totalHeight * dpiScale);
   const ctx = canvas.getContext('2d');
+  ctx.scale(dpiScale, dpiScale);
   
-  // Background
-  ctx.fillStyle = '#0b1220';
+  // Background (solid red)
+  ctx.fillStyle = '#7f1d1d';
   ctx.fillRect(0, 0, totalWidth, totalHeight);
   
-  // Title
-  ctx.fillStyle = '#e5e7eb';
-  ctx.font = '600 22px "Inter", "SF Pro Display", system-ui, -apple-system, sans-serif';
-  ctx.fillText('Wordle Leaderboard', paddingX, paddingY + 18);
+  // No title
   
   // Headers
-  const headerY = paddingY + titleHeight + 6;
-  ctx.font = '600 14px "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif';
-  ctx.fillStyle = '#9fb6ff';
+  const headerY = paddingY + titleHeight + 12;
+  ctx.font = '800 22px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
+  ctx.fillStyle = '#ffd1d9'; // light pink headers for contrast
   let x = paddingX;
   for (let j = 0; j < headers.length; j++) {
-    // Header background pill
-    ctx.fillStyle = '#111a33';
-    ctx.fillRect(x - 4, headerY - 18, colWidths[j]! + 8, 26);
-    // Header text
-    ctx.fillStyle = '#c9d6ff';
-    ctx.fillText(headers[j] || '', x, headerY);
+    const text = headers[j] || '';
+    const m = ctx.measureText(text);
+    const cx = x + (colWidths[j]! / 2);
+    ctx.fillText(text, cx - m.width / 2, headerY);
     x += colWidths[j]! + gutter;
   }
+  // Divider under headers
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(paddingX - 6, headerY + 10);
+  ctx.lineTo(totalWidth - paddingX + 6, headerY + 10);
+  ctx.stroke();
   
   // Data rows
-  ctx.font = '14px "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif';
-  for (let i = 0; i < Math.min(rows.length, maxRows); i++) {
+  ctx.font = '20px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
+  for (let i = 0; i < rowCount; i++) {
     const row = rows[i];
     if (!row) continue;
-    const y = paddingY + titleHeight + headerHeight + i * rowHeight + 6;
-    // Zebra striping
-    ctx.fillStyle = i % 2 === 0 ? '#0e1730' : '#0b1226';
-    ctx.fillRect(paddingX - 6, y - 18, totalWidth - paddingX * 2 + 12, rowHeight - 4);
-    // Text
+    const y = paddingY + titleHeight + headerHeight + i * rowHeight + 14;
+    // No zebra striping for maximal clarity
+    // Text (centered for every column)
     let colX = paddingX;
     for (let j = 0; j < row.length; j++) {
       const cell = row[j] || '';
-      // Right-align numbers except Name
-      const isNumeric = j !== 1;
-      ctx.fillStyle = j === 1 ? '#e6e9f5' : '#cad5f6';
-      if (isNumeric) {
-        const m = ctx.measureText(cell);
-        ctx.fillText(cell, colX + colWidths[j]! - m.width, y);
-      } else {
-        ctx.fillText(cell, colX, y);
-      }
+      ctx.fillStyle = '#ffffff';
+      const m = ctx.measureText(cell);
+      const cx = colX + (colWidths[j]! / 2);
+      ctx.fillText(cell, cx - m.width / 2, y);
       colX += colWidths[j]! + gutter;
     }
   }

@@ -54,7 +54,15 @@ function tryResolveAliasFromMembers(rawAlias: string): string | null {
 
 const commands = [
 	new SlashCommandBuilder().setName('ping').setDescription('Ping -> Pong'),
-	new SlashCommandBuilder().setName('leaderboard').setDescription('Show the Wordle leaderboard'),
+	new SlashCommandBuilder().setName('leaderboard').setDescription('Show the Wordle leaderboard')
+		.addStringOption(o => o.setName('format').setDescription('Output format')
+			.addChoices(
+				{ name: 'image', value: 'image' },
+				{ name: 'text', value: 'text' },
+				{ name: 'csv', value: 'csv' },
+			))
+		.addIntegerOption(o => o.setName('page').setDescription('Page number (default 1)').setMinValue(1))
+		.addIntegerOption(o => o.setName('page_size').setDescription('Rows per page (default 15)').setMinValue(5).setMaxValue(50)),
 	new SlashCommandBuilder().setName('backfill').setDescription('Backfill past Wordle messages')
 		.addIntegerOption(o => o.setName('limit').setDescription('How many messages to scan (default 500)').setMinValue(50).setMaxValue(5000)),
 	new SlashCommandBuilder().setName('alias').setDescription('Manage aliases')
@@ -99,10 +107,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
 			await interaction.reply('No results yet.');
 			return;
 		}
-		// Resolve display names
+		// Options
+		const format = interaction.options.getString('format') ?? 'image';
+		const page = (interaction.options.getInteger('page') ?? 1) as number;
+		const pageSize = Math.max(5, Math.min((interaction.options.getInteger('page_size') ?? 15) as number, 50));
+
+		const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+		const currentPage = Math.max(1, Math.min(page, totalPages));
+		const start = (currentPage - 1) * pageSize;
+		const end = Math.min(start + pageSize, rows.length);
+		const pageRows = rows.slice(start, end);
+
+		// Resolve display names for current page only
 		const guild = await client.guilds.fetch(env.GUILD_ID);
 		const nameMap: Record<string, string> = {};
-		for (const r of rows) {
+		for (const r of pageRows) {
 			try {
 				const m = await guild.members.fetch(r.discordUserId);
 				nameMap[r.discordUserId] = m.displayName;
@@ -115,10 +134,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 				}
 			}
 		}
-		// Just the table as image
+
 		const headers = ['Rank','Name','Weighted Avg','Avg','SD','Games','Total','1','2','3','4','5','6','Fail'];
-		const tableRows: string[][] = rows.slice(0, 15).map((r, i) => [
-			String(i+1),
+		const tableRows: string[][] = pageRows.map((r, i) => [
+			String(start + i + 1),
 			nameMap[r.discordUserId] || r.discordUserId,
 			r.weightedAvg.toFixed(2),
 			r.avgGuesses == null ? '-' : r.avgGuesses.toFixed(2),
@@ -127,8 +146,41 @@ client.on(Events.InteractionCreate, async (interaction) => {
 			String(r.total),
 			String(r.g1),String(r.g2),String(r.g3),String(r.g4),String(r.g5),String(r.g6),String(r.failures)
 		]);
-		const png = await renderTableImage(headers, tableRows);
-		await interaction.reply({ files: [new AttachmentBuilder(png, { name: 'leaderboard.png' })] });
+
+		const footer = `Page ${currentPage}/${totalPages} • Rows ${start + 1}-${end} of ${rows.length}`;
+
+		if (format === 'text') {
+			const widths = headers.map((_, j) =>
+				Math.max(
+					String(headers[j] ?? '').length,
+					...tableRows.map(r => String(r[j] ?? '').length),
+				)
+			);
+			const rightAlign = (j: number) => j !== 1;
+			const pad = (v: string, w: number, ra: boolean) => ra ? v.toString().padStart(w) : v.toString().padEnd(w);
+			const lines = [
+				headers.map((h, j) => pad(h, (widths[j] ?? 0), rightAlign(j))).join('  '),
+				widths.map((w) => '-'.repeat(w)).join('  '),
+				...tableRows.map(row => row.map((c, j) => pad(String(c), (widths[j] ?? 0), rightAlign(j))).join('  ')),
+			];
+			await interaction.reply(`${footer}\n\`\`\`\n${lines.join('\n')}\n\`\`\``);
+			return;
+		}
+
+		if (format === 'csv') {
+			const csvSafe = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
+			const csv = [
+				headers.map(csvSafe).join(','),
+				...tableRows.map(r => r.map(csvSafe).join(',')),
+			].join('\n');
+			const file = new AttachmentBuilder(Buffer.from(csv, 'utf8'), { name: `leaderboard-page-${currentPage}.csv` });
+			await interaction.reply({ content: footer, files: [file] });
+			return;
+		}
+
+		// default image
+		const png = await renderTableImage(headers, tableRows.slice(0, 15));
+		await interaction.reply({ content: footer, files: [new AttachmentBuilder(png, { name: 'leaderboard.png' })] });
 	}
 	if (interaction.commandName === 'backfill') {
 		const limit = interaction.options.getInteger('limit') ?? 500;

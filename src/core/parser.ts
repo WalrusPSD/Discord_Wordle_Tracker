@@ -16,6 +16,7 @@ const MENTION_GLOBAL = /<@!?([0-9]+)>/g;
 // Plain @name tokens – capture everything until next @ or line break (handles spaces like "@Zahir Hassan")
 const PLAIN_AT_GLOBAL = /@([^@\n]+)/g;
 const TITLE_PUZZLE = /Wordle\s+No\.\s*(\d+)/i;
+const CROWN_LINE_PREFIX = /^\s*👑\s*/; // crown emoji may prefix a winning line
 
 export function parseWordleSummary(content: string): ParsedMessage | null {
   if (!content) return null;
@@ -24,27 +25,30 @@ export function parseWordleSummary(content: string): ParsedMessage | null {
   let puzzleNumber: number | null = null;
 
   for (const line of lines) {
+    // Normalize: trim and strip an optional leading crown emoji
     const t = line.trim();
+    const s = t.replace(CROWN_LINE_PREFIX, '');
     // Reset global regex state for each new line to avoid stale lastIndex across lines
     MENTION_GLOBAL.lastIndex = 0;
     PLAIN_AT_GLOBAL.lastIndex = 0;
-    const mTitle = TITLE_PUZZLE.exec(t);
+    const mTitle = TITLE_PUZZLE.exec(s);
     if (mTitle) {
       puzzleNumber = Number(mTitle[1]);
     }
-    const win = LINE_WIN_PREFIX.exec(t);
+    // Accept optional crown prefix (already stripped) and both start/middle-of-line forms
+    const win = LINE_WIN_PREFIX.exec(s);
     if (win) {
       const score = Number(win[2]);
       const ids: string[] = [];
       let m: RegExpExecArray | null;
       while (true) {
-        m = MENTION_GLOBAL.exec(t) as RegExpExecArray | null;
+        m = MENTION_GLOBAL.exec(s) as RegExpExecArray | null;
         if (!m) break;
         ids.push(m[1] ?? '');
       }
       if (ids.length === 0) {
         while (true) {
-          m = PLAIN_AT_GLOBAL.exec(t) as RegExpExecArray | null;
+          m = PLAIN_AT_GLOBAL.exec(s) as RegExpExecArray | null;
           if (!m) break;
           const token = `@${(m[1] ?? '').trim().toLowerCase()}`;
           if (token !== '@') ids.push(token);
@@ -55,17 +59,17 @@ export function parseWordleSummary(content: string): ParsedMessage | null {
       }
       continue;
     }
-    if (LINE_FAIL_PREFIX.test(t)) {
+    if (LINE_FAIL_PREFIX.test(s)) {
       const ids: string[] = [];
       let m: RegExpExecArray | null;
       while (true) {
-        m = MENTION_GLOBAL.exec(t) as RegExpExecArray | null;
+        m = MENTION_GLOBAL.exec(s) as RegExpExecArray | null;
         if (!m) break;
         ids.push(m[1] ?? '');
       }
       if (ids.length === 0) {
         while (true) {
-          m = PLAIN_AT_GLOBAL.exec(t) as RegExpExecArray | null;
+          m = PLAIN_AT_GLOBAL.exec(s) as RegExpExecArray | null;
           if (!m) break;
           const token = `@${(m[1] ?? '').trim().toLowerCase()}`;
           if (token !== '@') ids.push(token);

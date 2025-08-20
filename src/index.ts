@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, Events, AttachmentBuilder } from 'discord.js';
-import { openDb, upsertResult, getLeaderboard } from './core/db';
+import { openDb, upsertResult, getLeaderboard, getAlias, listAliases, setAlias } from './core/db';
 import { parseWordleSummary } from './core/parser';
 import { loadEnv } from './core/env';
 import cron from 'node-cron';
@@ -8,11 +8,49 @@ import { renderTableImage } from './core/chart';
 
 const env = loadEnv();
 
-const intents = [GatewayIntentBits.Guilds];
+const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers];
 if (env.ENABLE_INGEST) {
 	intents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
 }
 const client = new Client({ intents });
+
+// Member cache for automatic alias resolution
+type MemberLite = { id: string; displayName: string; username: string; normDisplay: string; normUsername: string };
+const memberCache: Map<string, MemberLite> = new Map();
+function normalizeName(input: string): string {
+  return input.trim().toLowerCase().replace(/^@/, '').replace(/[^a-z0-9]/g, '');
+}
+async function buildMemberCache() {
+  try {
+    const guild = await client.guilds.fetch(env.GUILD_ID);
+    if (!guild) return;
+    const members = await guild.members.fetch();
+    memberCache.clear();
+    members.forEach((m) => {
+      const normDisplay = normalizeName(m.displayName ?? '');
+      const normUsername = normalizeName(m.user?.username ?? '');
+      memberCache.set(m.id, { id: m.id, displayName: m.displayName, username: m.user?.username ?? '', normDisplay, normUsername });
+    });
+    console.log(`[alias] Cached ${memberCache.size} guild members`);
+  } catch (e) {
+    console.warn('[alias] Failed to build member cache. Automatic alias resolution may be limited.', e);
+  }
+}
+function tryResolveAliasFromMembers(rawAlias: string): string | null {
+  const key = normalizeName(rawAlias);
+  if (!key) return null;
+  // Exact match on displayName or username
+  for (const m of memberCache.values()) {
+    if (m.normDisplay === key || m.normUsername === key) return m.id;
+  }
+  // Starts with match
+  const starts = Array.from(memberCache.values()).filter(m => m.normDisplay?.startsWith(key) || m.normUsername?.startsWith(key));
+  if (starts.length === 1) return starts[0]!.id;
+  // Includes match (last resort)
+  const includes = Array.from(memberCache.values()).filter(m => m.normDisplay?.includes(key) || m.normUsername?.includes(key));
+  if (includes.length === 1) return includes[0]!.id;
+  return null;
+}
 
 const commands = [
 	new SlashCommandBuilder().setName('ping').setDescription('Ping -> Pong'),
@@ -28,7 +66,9 @@ const commands = [
 
 async function registerCommands() {
 	const rest = new REST({ version: '10' }).setToken(env.DISCORD_TOKEN);
-	await rest.put(Routes.applicationGuildCommands((client.user as any).id, env.GUILD_ID), { body: commands });
+	const appId = client.user?.id as string | undefined;
+	if (!appId) throw new Error('Client user is not ready');
+	await rest.put(Routes.applicationGuildCommands(appId, env.GUILD_ID), { body: commands });
 }
 
 client.once(Events.ClientReady, async () => {
@@ -41,6 +81,9 @@ client.once(Events.ClientReady, async () => {
 		const now = dayjs();
 		console.log(`[cron] ${now.format('YYYY-MM-DD HH:mm:ss')} running daily job`);
 	}, { timezone: env.TZ });
+
+	// Warm up member cache for alias auto-resolution
+	await buildMemberCache();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -100,45 +143,110 @@ client.on(Events.InteractionCreate, async (interaction) => {
 			return;
 		}
 		const db = openDb();
+		const aliasMap = new Map<string, string>();
+		for (const a of listAliases(db)) aliasMap.set(`@${a.alias}`, a.discordUserId);
+
 		let fetched = 0;
+		let scanned = 0;
+		let parsedCount = 0;
 		let ingested = 0;
+		let skippedNoMatch = 0;
+		let skippedAlias = 0;
 		let lastId: string | undefined;
-		while (fetched < limit) {
-			const batch = await (channel as any).messages.fetch({ limit: Math.min(100, limit - fetched), before: lastId });
-			if (batch.size === 0) break;
-			for (const [, msg] of batch) {
-				// Don't require a specific author; rely on parser match instead
-				const parsed = parseWordleSummary(msg.content || '');
-				if (!parsed) continue;
-				console.log(`📝 Found message with ${parsed.entries.length} entries: ${msg.content?.slice(0, 50)}...`);
-				const dateISO = new Date(msg.createdTimestamp || Date.now()).toISOString().slice(0,10);
-				for (const e of parsed.entries) {
-					let uid = e.userId;
-					if (uid.startsWith('@')) {
-						const { getAlias } = await import('./core/db');
-						const mapped = getAlias(openDb(), uid);
-						if (!mapped) {
-							console.log(`❌ No alias for: ${uid}`);
-							continue;
-						}
-						uid = mapped;
-						console.log(`✅ Mapped ${e.userId} -> ${uid}`);
+
+		const allLogs: string[] = [];
+		const recent: string[] = [];
+		const appendLog = (line: string) => {
+			const stamp = new Date().toISOString();
+			const text = `[${stamp}] ${line}`;
+			allLogs.push(text);
+			recent.push(text);
+			if (recent.length > 12) recent.shift();
+		};
+		const renderStatus = () => {
+			return [
+				`Scanned: ${scanned} | Fetched: ${fetched} | Parsed msgs: ${parsedCount} | Entries saved: ${ingested} | Skipped (no match): ${skippedNoMatch} | Skipped (no alias): ${skippedAlias}`,
+				'```',
+				...recent.slice(-12),
+				'```',
+			].join('\n');
+		};
+
+		await interaction.editReply('Starting backfill...');
+
+		let hadError = false;
+		db.exec('BEGIN');
+		try {
+			while (fetched < limit) {
+				const batch = await (channel as any).messages.fetch({ limit: Math.min(100, limit - fetched), before: lastId });
+				if (batch.size === 0) break;
+				fetched += batch.size;
+				appendLog(`Fetched batch of ${batch.size} messages (total fetched=${fetched})`);
+				for (const [, msg] of batch) {
+					scanned++;
+					const content = msg.content || '';
+					if (!(/👑/.test(content) || /[1-6]\/6\s*:/.test(content) || /X\/6\s*:/.test(content))) {
+						skippedNoMatch++;
+						continue;
 					}
-					upsertResult(db, {
-						discordUserId: uid,
-						puzzleNumber: parsed.puzzleNumber,
-						dateISO,
-						guesses: e.failed ? null : e.guesses,
-						failed: e.failed ? 1 : 0,
-						raw: msg.content || '',
-					});
-					ingested++;
+					const parsed = parseWordleSummary(content);
+					if (!parsed) {
+						skippedNoMatch++;
+						continue;
+					}
+					parsedCount++;
+					appendLog(`📝 Parsed ${parsed.entries.length} entr${parsed.entries.length === 1 ? 'y' : 'ies'} | msgId=${msg.id} | ts=${new Date(msg.createdTimestamp || Date.now()).toISOString()} | snippet="${content.slice(0, 80).replace(/\n/g, ' ')}"`);
+					const dateISO = dayjs(msg.createdTimestamp || Date.now()).subtract(1, 'day').format('YYYY-MM-DD');
+					for (const e of parsed.entries) {
+						let uid = e.userId;
+						if (uid.startsWith('@')) {
+							let mapped = aliasMap.get(uid) || getAlias(db, uid);
+							if (!mapped) {
+								const resolved = tryResolveAliasFromMembers(uid);
+								if (resolved) {
+									setAlias(db, uid, resolved);
+									aliasMap.set(uid, resolved);
+									appendLog(`🔁 Auto-added alias ${uid} → ${resolved} from guild members`);
+									mapped = resolved;
+								}
+							}
+							if (!mapped) {
+								skippedAlias++;
+								appendLog(`❌ Missing alias for ${uid} (date=${dateISO})`);
+								continue;
+							}
+							if (mapped !== uid) {
+								appendLog(`✅ Alias ${uid} → ${mapped}`);
+							}
+							uid = mapped;
+						}
+						upsertResult(db, {
+							discordUserId: uid,
+							puzzleNumber: parsed.puzzleNumber,
+							dateISO,
+							guesses: e.failed ? null : e.guesses,
+							failed: e.failed ? 1 : 0,
+							raw: content,
+						});
+						ingested++;
+					}
 				}
+				lastId = batch.last()?.id;
+				await interaction.editReply(renderStatus());
 			}
-			fetched += batch.size;
-			lastId = batch.last()?.id;
-		}
-		await interaction.editReply(`Backfill complete. Scanned ${fetched} messages, found ${ingested} valid entries. Check console for details.`);
+			db.exec('COMMIT');
+		} catch (err: any) {
+			hadError = true;
+			try { db.exec('ROLLBACK'); } catch {}
+			appendLog(`❗ Error during backfill: ${err?.message || String(err)}`);
+		} 
+
+		const summary = `Backfill complete. Scanned ${scanned} messages (fetched=${fetched}). Parsed ${parsedCount} messages, saved ${ingested} entries. Skipped: no match=${skippedNoMatch}, no alias=${skippedAlias}.`;
+		appendLog(summary);
+		await interaction.editReply(renderStatus());
+		const logText = allLogs.join('\n');
+		const attachment = new AttachmentBuilder(Buffer.from(logText, 'utf8'), { name: 'backfill-log.txt' });
+		await interaction.followUp({ content: summary, files: [attachment] });
 	}
 	if (interaction.commandName === 'alias') {
 		const sub = interaction.options.getSubcommand();
@@ -146,13 +254,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 		if (sub === 'set') {
 			const name = interaction.options.getString('name', true);
 			const user = interaction.options.getUser('user', true);
-			const { setAlias } = await import('./core/db');
 			setAlias(db, name, user.id);
 			await interaction.reply(`Mapped ${name} → <@${user.id}>`);
 			return;
 		}
 		if (sub === 'list') {
-			const { listAliases } = await import('./core/db');
 			const all = listAliases(db);
 			if (all.length === 0) { await interaction.reply('No aliases set.'); return; }
 			const list = all.map(a => `${a.alias} → <@${a.discordUserId}>`).join('\n');
@@ -175,8 +281,7 @@ if (env.ENABLE_INGEST) {
 		for (const e of parsed.entries) {
 			let uid = e.userId;
 			if (uid.startsWith('@')) {
-				const { getAlias } = await import('./core/db');
-				const mapped = getAlias(openDb(), uid);
+				const mapped = getAlias(db, uid);
 				if (!mapped) return;
 				uid = mapped;
 			}

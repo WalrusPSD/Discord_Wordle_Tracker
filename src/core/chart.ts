@@ -86,40 +86,77 @@ export async function renderAvgGuessChart(rows: LeaderboardRow[], names: string[
 
 export async function renderTableImage(headers: string[], rows: string[][]): Promise<Buffer> {
   const maxRows = 15;
-  const rowHeight = 32;
-  const padding = 20;
-  const colWidth = 80;
-  const w = headers.length * colWidth + padding * 2;
-  const h = (Math.min(rows.length, maxRows) + 2) * rowHeight + padding * 2;
+  const rowHeight = 36;
+  const paddingX = 24;
+  const paddingY = 22;
+  const gutter = 12;
+  const minColWidth = 70;
+  const headerHeight = 44;
+  const titleHeight = 32;
+
+  // Compute dynamic widths per column based on content
+  const canvasTmp = createCanvas(10, 10);
+  const ctxTmp = canvasTmp.getContext('2d');
+  ctxTmp.font = '14px "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif';
+  const colWidths = headers.map((h, idx) => {
+    const headerWidth = ctxTmp.measureText(h).width + 14;
+    const cellWidths = rows.slice(0, maxRows).map(r => (r[idx] ? ctxTmp.measureText(r[idx]).width + 14 : 0));
+    const maxCell = cellWidths.length ? Math.max(...cellWidths) : 0;
+    return Math.max(minColWidth, headerWidth, maxCell);
+  });
+  const totalWidth = colWidths.reduce((a, b) => a + b, 0) + paddingX * 2 + gutter * (headers.length - 1);
+  const totalHeight = paddingY * 2 + titleHeight + headerHeight + (Math.min(rows.length, maxRows)) * rowHeight;
   
-  const canvas = createCanvas(w, h);
+  const canvas = createCanvas(totalWidth, totalHeight);
   const ctx = canvas.getContext('2d');
   
   // Background
-  ctx.fillStyle = '#111827';
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#0b1220';
+  ctx.fillRect(0, 0, totalWidth, totalHeight);
   
   // Title
   ctx.fillStyle = '#e5e7eb';
-  ctx.font = 'bold 24px monospace';
-  ctx.fillText('Wordle Leaderboard', padding, padding + 20);
+  ctx.font = '600 22px "Inter", "SF Pro Display", system-ui, -apple-system, sans-serif';
+  ctx.fillText('Wordle Leaderboard', paddingX, paddingY + 18);
   
   // Headers
-  ctx.font = 'bold 16px monospace';
-  ctx.fillStyle = '#93c5fd';
+  const headerY = paddingY + titleHeight + 6;
+  ctx.font = '600 14px "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = '#9fb6ff';
+  let x = paddingX;
   for (let j = 0; j < headers.length; j++) {
-    ctx.fillText(headers[j] || '', padding + j * colWidth, padding + rowHeight * 2);
+    // Header background pill
+    ctx.fillStyle = '#111a33';
+    ctx.fillRect(x - 4, headerY - 18, colWidths[j]! + 8, 26);
+    // Header text
+    ctx.fillStyle = '#c9d6ff';
+    ctx.fillText(headers[j] || '', x, headerY);
+    x += colWidths[j]! + gutter;
   }
   
   // Data rows
-  ctx.font = '14px monospace';
-  ctx.fillStyle = '#e5e7eb';
+  ctx.font = '14px "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif';
   for (let i = 0; i < Math.min(rows.length, maxRows); i++) {
     const row = rows[i];
     if (!row) continue;
-    const y = padding + rowHeight * (i + 3);
+    const y = paddingY + titleHeight + headerHeight + i * rowHeight + 6;
+    // Zebra striping
+    ctx.fillStyle = i % 2 === 0 ? '#0e1730' : '#0b1226';
+    ctx.fillRect(paddingX - 6, y - 18, totalWidth - paddingX * 2 + 12, rowHeight - 4);
+    // Text
+    let colX = paddingX;
     for (let j = 0; j < row.length; j++) {
-      ctx.fillText(row[j] || '', padding + j * colWidth, y);
+      const cell = row[j] || '';
+      // Right-align numbers except Name
+      const isNumeric = j !== 1;
+      ctx.fillStyle = j === 1 ? '#e6e9f5' : '#cad5f6';
+      if (isNumeric) {
+        const m = ctx.measureText(cell);
+        ctx.fillText(cell, colX + colWidths[j]! - m.width, y);
+      } else {
+        ctx.fillText(cell, colX, y);
+      }
+      colX += colWidths[j]! + gutter;
     }
   }
   

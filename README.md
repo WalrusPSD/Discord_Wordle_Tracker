@@ -116,4 +116,4 @@ High-level changes needed for Workers:
 - **Ingest not working**: set `ENABLE_INGEST=true`, enable Message Content intent, and verify `WORDLE_BOT_ID` and `CHANNEL_ID`.
 
 ### License
-MIT (or your preferred license). Update this section if you choose a different license.
+MIT 

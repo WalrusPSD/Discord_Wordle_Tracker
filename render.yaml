@@ -1,0 +1,32 @@
+services:
+  - type: worker
+    name: discord-wordle-bot
+    runtime: docker
+    dockerfilePath: Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_FILE
+        value: /data/data.sqlite
+      # Set these in the Render dashboard after creating from this blueprint
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: LEADERBOARD_POST_CHANNEL_ID
+        sync: false
+      - key: WORDLE_BOT_ID
+        sync: false
+      - key: TZ
+        sync: false
+      - key: ENABLE_INGEST
+        sync: false
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+
+

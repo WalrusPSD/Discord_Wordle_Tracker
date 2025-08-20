@@ -11,7 +11,7 @@ export type ResultRow = {
   raw: string;
 };
 
-export function openDb(dbFile = path.join(process.cwd(), 'data.sqlite')): any {
+export function openDb(dbFile = (process.env.DB_FILE || path.join(process.cwd(), 'data.sqlite'))): any {
   fs.mkdirSync(path.dirname(dbFile), { recursive: true });
   const db = new Database(dbFile);
   db.pragma('journal_mode = WAL');

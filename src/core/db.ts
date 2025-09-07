@@ -107,7 +107,7 @@ export type LeaderboardRow = {
   avgGuesses: number | null; // mean of guesses with failures counted as 7
   stdDev: number | null;
   total: number; // sum of (7 - guesses) for wins
-  weightedAvg: number; // total / gamesPlayed
+  weightedAvg: number; // mean over games of (day average - user's score), failures as 7
 };
 
 export function getLeaderboard(db: Database.Database): LeaderboardRow[] {
@@ -138,32 +138,57 @@ export function getLeaderboard(db: Database.Database): LeaderboardRow[] {
     FROM agg a
   `).all() as any[];
 
+  // Precompute per-day averages across all players, counting failures as 7
+  const dayAvgRows = db.prepare(`
+    SELECT game_id, AVG(CASE WHEN failed = 1 THEN 7 ELSE COALESCE(guesses, 7) END) AS avgVal
+    FROM results
+    GROUP BY game_id
+  `).all() as { game_id: number, avgVal: number }[];
+  const dayAvgMap = new Map<number, number>();
+  for (const r of dayAvgRows) {
+    dayAvgMap.set(r.game_id, r.avgVal);
+  }
+
   const withDerived: LeaderboardRow[] = rows.map((r) => {
     const total = (r.g1*6) + (r.g2*5) + (r.g3*4) + (r.g4*3) + (r.g5*2) + (r.g6*1);
-    const weightedAvg = r.gamesPlayed ? total / r.gamesPlayed : 0;
+    const weightedAvg = 0; // compute below using per-day averages
     // stddev over wins only using a second query per user for clarity
     return { ...r, total, weightedAvg, stdDev: null, avgGuesses: null } as LeaderboardRow;
   });
 
   // Compute avg and stddev counting failures as 7
-  const stmt = db.prepare(`SELECT guesses, failed FROM results WHERE discord_user_id = ?`);
+  const stmt = db.prepare(`SELECT game_id, guesses, failed FROM results WHERE discord_user_id = ?`);
   for (const row of withDerived) {
-    const vals = (stmt.all(row.discordUserId) as { guesses: number | null, failed: number }[])
-      .map(v => v.failed ? 7 : (v.guesses ?? 7));
+    const userResults = (stmt.all(row.discordUserId) as { game_id: number, guesses: number | null, failed: number }[]);
+    const vals = userResults.map(v => v.failed ? 7 : (v.guesses ?? 7));
     if (vals.length === 0) { row.avgGuesses = null; row.stdDev = null; continue; }
     row.avgGuesses = vals.reduce((a,b)=>a+b,0) / vals.length;
     if (vals.length <= 1) { row.stdDev = 0; continue; }
     const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
     const variance = vals.reduce((a,b)=>a+Math.pow(b-mean,2),0)/(vals.length-1);
     row.stdDev = Math.sqrt(variance);
+
+    // Compute weightedAvg as mean of (day average - user's score), failures as 7
+    let diffSum = 0;
+    let countDays = 0;
+    for (const ur of userResults) {
+      const userVal = ur.failed ? 7 : (ur.guesses ?? 7);
+      const dayAvg = dayAvgMap.get(ur.game_id);
+      if (typeof dayAvg === 'number') {
+        diffSum += (dayAvg - userVal);
+        countDays += 1;
+      }
+    }
+    row.weightedAvg = countDays ? (diffSum / countDays) : 0;
   }
 
-  // sort: weightedAvg desc, gamesPlayed desc, avgGuesses asc
+  // sort: weightedAvg desc, avgGuesses asc, stdDev asc
   withDerived.sort((a,b)=>{
     if (b.weightedAvg !== a.weightedAvg) return b.weightedAvg - a.weightedAvg;
-    if (b.gamesPlayed !== a.gamesPlayed) return b.gamesPlayed - a.gamesPlayed;
     const aAvg = a.avgGuesses ?? Infinity; const bAvg = b.avgGuesses ?? Infinity;
-    return aAvg - bAvg;
+    if (aAvg !== bAvg) return aAvg - bAvg;
+    const aSd = a.stdDev ?? Infinity; const bSd = b.stdDev ?? Infinity;
+    return aSd - bSd;
   });
   return withDerived;
 }
